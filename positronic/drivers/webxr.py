@@ -42,13 +42,13 @@ _LOG_CONFIG = {
 }
 
 
-def _parse_controller_data(data: dict):
+def _parse_controller_data(data: dict, scale: float = 1.0):
     controller_positions = {'left': None, 'right': None}
     buttons_dict = {'left': None, 'right': None}
     for side in ['right', 'left']:
         if data['controllers'][side] is not None:
-            translation = np.array(data['controllers'][side]['position'], dtype=np.float64)
-            rotation = np.array(data['controllers'][side]['orientation'], dtype=np.float64)
+            translation = np.array(data['controllers'][side]['position'], dtype=np.float64) * scale
+            rotation = np.array(data['controllers'][side]['orientation'], dtype=np.float64) * scale
             buttons = np.array(data['controllers'][side]['buttons'], dtype=np.float64)
             controller_positions[side] = geom.Transform3D(translation, rotation)
             buttons_dict[side] = buttons
@@ -122,7 +122,8 @@ class WebXR(pimm.ControlSystem):
                  ssl_keyfile: str = "key.pem",
                  ssl_certfile: str = "cert.pem",
                  frontend: str = "oculus",
-                 use_https: bool = True):
+                 use_https: bool = True,
+                 sensitivity_scale: float = 1.0):
         self.port = port
         self.ssl_keyfile = ssl_keyfile
         self.ssl_certfile = ssl_certfile
@@ -133,6 +134,7 @@ class WebXR(pimm.ControlSystem):
         self.frame = pimm.ControlSystemReceiver(self)
         self.controller_positions = pimm.ControlSystemEmitter(self)
         self.buttons = pimm.ControlSystemEmitter(self)
+        self.sensitivity_scale = sensitivity_scale
 
     def run(self, should_stop: pimm.SignalReceiver, clock: pimm.Clock) -> Iterator[pimm.Sleep]:  # noqa: C901
         app = FastAPI()
@@ -204,7 +206,7 @@ class WebXR(pimm.ControlSystem):
                     try:
                         # Use asyncio.wait_for with timeout to avoid blocking indefinitely
                         data = await asyncio.wait_for(websocket.receive_json(), timeout=1)
-                        controller_positions, buttons = _parse_controller_data(data)
+                        controller_positions, buttons = _parse_controller_data(data, self.sensitivity_scale)
                         ts = clock.now_ns()
                         if controller_positions['left'] is not None or controller_positions['right'] is not None:
                             self.controller_positions.emit(controller_positions, ts)
