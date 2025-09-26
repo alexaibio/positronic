@@ -48,7 +48,7 @@ def _parse_controller_data(data: dict, scale: float = 1.0):
     for side in ['right', 'left']:
         if data['controllers'][side] is not None:
             translation = np.array(data['controllers'][side]['position'], dtype=np.float64) * scale
-            rotation = np.array(data['controllers'][side]['orientation'], dtype=np.float64) * scale
+            rotation = np.array(data['controllers'][side]['orientation'], dtype=np.float64)
             buttons = np.array(data['controllers'][side]['buttons'], dtype=np.float64)
             controller_positions[side] = geom.Transform3D(translation, rotation)
             buttons_dict[side] = buttons
