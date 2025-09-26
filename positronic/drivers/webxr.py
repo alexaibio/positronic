@@ -123,7 +123,7 @@ class WebXR(pimm.ControlSystem):
                  ssl_certfile: str = "cert.pem",
                  frontend: str = "oculus",
                  use_https: bool = True,
-                 sensitivity_scale: float = 1.0):
+                 sensitivity: float = 1.0):
         self.port = port
         self.ssl_keyfile = ssl_keyfile
         self.ssl_certfile = ssl_certfile
@@ -134,7 +134,7 @@ class WebXR(pimm.ControlSystem):
         self.frame = pimm.ControlSystemReceiver(self)
         self.controller_positions = pimm.ControlSystemEmitter(self)
         self.buttons = pimm.ControlSystemEmitter(self)
-        self.sensitivity_scale = sensitivity_scale
+        self.sensitivity = sensitivity
 
     def run(self, should_stop: pimm.SignalReceiver, clock: pimm.Clock) -> Iterator[pimm.Sleep]:  # noqa: C901
         app = FastAPI()
@@ -206,7 +206,13 @@ class WebXR(pimm.ControlSystem):
                     try:
                         # Use asyncio.wait_for with timeout to avoid blocking indefinitely
                         data = await asyncio.wait_for(websocket.receive_json(), timeout=1)
-                        controller_positions, buttons = _parse_controller_data(data, self.sensitivity_scale)
+                        controller_positions, buttons = _parse_controller_data(data)
+
+                        # apply scaling
+                        for side, transform in controller_positions.items():
+                            if transform is not None:
+                                controller_positions[side].translation *= self.sensitivity
+
                         ts = clock.now_ns()
                         if controller_positions['left'] is not None or controller_positions['right'] is not None:
                             self.controller_positions.emit(controller_positions, ts)
