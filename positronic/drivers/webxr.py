@@ -42,12 +42,12 @@ _LOG_CONFIG = {
 }
 
 
-def _parse_controller_data(data: dict, scale: float = 1.0):
+def _parse_controller_data(data: dict):
     controller_positions = {'left': None, 'right': None}
     buttons_dict = {'left': None, 'right': None}
     for side in ['right', 'left']:
         if data['controllers'][side] is not None:
-            translation = np.array(data['controllers'][side]['position'], dtype=np.float64) * scale
+            translation = np.array(data['controllers'][side]['position'], dtype=np.float64)
             rotation = np.array(data['controllers'][side]['orientation'], dtype=np.float64)
             buttons = np.array(data['controllers'][side]['buttons'], dtype=np.float64)
             controller_positions[side] = geom.Transform3D(translation, rotation)
