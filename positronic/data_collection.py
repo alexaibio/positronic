@@ -279,6 +279,7 @@ def main_sim(
     writer_cm = LocalDatasetWriter(Path(output_dir)) if output_dir is not None else nullcontext(None)
     with writer_cm as dataset_writer, pimm.World(clock=sim) as world:
         ds_agent = wire.wire(world, data_collection, dataset_writer, cameras, robot_arm, gripper, gui, TimeMode.MESSAGE)
+
         _wire(world, ds_agent, data_collection, webxr, robot_arm, sound)
 
         sim_iter = world.start(

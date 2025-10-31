@@ -14,7 +14,7 @@ from enum import IntEnum
 from multiprocessing import resource_tracker
 from multiprocessing.synchronize import Event as EventClass
 from queue import Empty, Full
-from typing import Any, TypeVar
+from typing import Any, TypeVar, Sequence
 
 from .core import (
     Clock,
@@ -79,7 +79,7 @@ class MultiprocessEmitter(SignalEmitter[T]):
         mode_value: mp.Value,
         lock: mp.Lock,
         ts_value: mp.Value,
-        up_value: mp.Value,
+        up_values: Sequence[bool],
         sm_queue: mp.Queue,
         *,
         forced_mode: TransportMode | None = None,
@@ -94,11 +94,13 @@ class MultiprocessEmitter(SignalEmitter[T]):
         self._data_type: type[SMCompliant] | None = None
         self._lock = lock
         self._ts_value = ts_value
-        self._up_value = up_value
+        #self._up_value = up_value
+        self._up_values = up_values  # List of bool flags for broadcast
         self._sm_queue = sm_queue
         self._sm: multiprocessing.shared_memory.SharedMemory | None = None
         self._expected_buf_size: int | None = None
-        self._receiver_ref: weakref.ReferenceType[MultiprocessReceiver[Any]] | None = None
+        #self._receiver_ref: weakref.ReferenceType[MultiprocessReceiver[Any]] | None = None
+        self._receiver_refs: list[weakref.ReferenceType[MultiprocessReceiver[Any]]] = []
         self._closed = False
         if forced_mode is not None:
             self._mode_value.value = int(forced_mode)
@@ -117,8 +119,13 @@ class MultiprocessEmitter(SignalEmitter[T]):
         self._mode = mode
         self._mode_value.value = int(mode)
 
-    def _attach_receiver(self, receiver: 'MultiprocessReceiver[Any]') -> None:
-        self._receiver_ref = weakref.ref(receiver)
+
+    # Now there might be several receivers
+    def _attach_receiver(self, receiver: 'MultiprocessReceiver[Any]') -> int:
+        self._receiver_refs.append(weakref.ref(receiver))
+        idx = len(self._receiver_refs) - 1
+        receiver._up_index = idx
+        return idx
 
     def _ensure_mode(self, data: T) -> TransportMode:
         if self._mode is not TransportMode.UNDECIDED:
@@ -163,7 +170,11 @@ class MultiprocessEmitter(SignalEmitter[T]):
         with self._lock:
             data.set_to_buffer(self._sm.buf)
             self._ts_value.value = ts
-            self._up_value.value = True
+            #self._up_value.value = True
+            # data for all receicers is fresh
+            for i in range(len(self._up_values)):
+                self._up_values[i] = True
+
         return True
 
     def emit(self, data: T, ts: int = -1):
@@ -229,7 +240,8 @@ class MultiprocessReceiver(SignalReceiver[T]):
         mode_value: mp.Value,
         lock: mp.Lock,
         ts_value: mp.Value,
-        up_value: mp.Value,
+        #up_value: mp.Value,
+        up_values: list,
         sm_queue: mp.Queue,
         *,
         forced_mode: TransportMode | None = None,
@@ -242,17 +254,20 @@ class MultiprocessReceiver(SignalReceiver[T]):
         # Shared memory state
         self._lock = lock
         self._ts_value = ts_value
-        self._up_value = up_value
+        #self._up_value = up_value
+        self._up_values = up_values
         self._sm_queue = sm_queue
         self._sm: multiprocessing.shared_memory.SharedMemory | None = None
         self._out_value: SMCompliant | None = None
         self._readonly_buffer: memoryview | None = None
+        self._up_index: int | None = None       # Assigned by emitter
 
         self._last_queue_message: Message[T] | None = None
         self._closed = False
         self._emitter_ref: weakref.ReferenceType[MultiprocessEmitter[Any]] | None = None
         if forced_mode is not None:
             self._mode_value.value = int(forced_mode)
+
 
     @property
     def transport_mode(self) -> TransportMode:
@@ -311,24 +326,47 @@ class MultiprocessReceiver(SignalReceiver[T]):
         self._out_value = data_type(*instantiation_params)
         return True
 
+    # def _read_shared_memory(self) -> Message[T] | None:
+    #     with self._lock:
+    #         if self._ts_value.value == -1:
+    #             return None
+    #
+    #     if not self._ensure_shared_memory_initialized():
+    #         return None
+    #
+    #     with self._lock:
+    #         if self._ts_value.value == -1:
+    #             return None
+    #
+    #         assert self._readonly_buffer is not None
+    #         assert self._out_value is not None
+    #         self._out_value.read_from_buffer(self._readonly_buffer)
+    #         updated = self._up_value.value
+    #         self._up_value.value = False
+    #         return Message(data=self._out_value, ts=self._ts_value.value, updated=updated)
+
     def _read_shared_memory(self) -> Message[T] | None:
         with self._lock:
             if self._ts_value.value == -1:
                 return None
-
+        if self._up_index is None:
+            return None
         if not self._ensure_shared_memory_initialized():
             return None
 
         with self._lock:
-            if self._ts_value.value == -1:
-                return None
-
             assert self._readonly_buffer is not None
             assert self._out_value is not None
             self._out_value.read_from_buffer(self._readonly_buffer)
-            updated = self._up_value.value
-            self._up_value.value = False
-            return Message(data=self._out_value, ts=self._ts_value.value, updated=updated)
+
+            updated = self._up_values[self._up_index]
+            if not updated:
+                return None
+
+
+            self._up_values[self._up_index] = False
+            return Message(data=self._out_value, ts=self._ts_value.value, updated=True)
+
 
     def read(self) -> Message[T] | None:
         mode = self.transport_mode
@@ -589,6 +627,21 @@ class World:
         if not isinstance(emitter, FakeEmitter) and not isinstance(receiver, FakeReceiver):
             self._connections.append((emitter, receiver, emitter_wrapper, receiver_wrapper))
 
+    def connect_broadcast(
+            self,
+            emitter: ControlSystemEmitter[T],
+            receivers: list[ControlSystemReceiver[T]],
+    ):
+        """Connect one emitter to multiple receivers using shared memory."""
+        n = len(receivers)
+        # Create a single SM pipe with n receivers
+        em, _ = self.mp_pipe(maxsize=1, transport=TransportMode.SHARED_MEMORY)
+        emitter._bind(em)
+
+        for receiver in receivers:
+            receiver._bind(em)
+            em._attach_receiver(receiver)
+
     def pair(
         self,
         connector: ControlSystemEmitter | ControlSystemReceiver,
@@ -744,20 +797,23 @@ class World:
         forced_mode: TransportMode | None
         forced_mode = transport if transport in (TransportMode.QUEUE, TransportMode.SHARED_MEMORY) else None
 
+        # create primitives which will be shared between emitter and receiver
         message_queue = self._manager.Queue(maxsize=maxsize)
         lock = self._manager.Lock()
-        ts_value = self._manager.Value('Q', -1)
-        up_value = self._manager.Value('b', False)
-        sm_queue = self._manager.Queue()
+        ts_value = self._manager.Value('Q', -1)             # the most recent emission
+        #up_value = self._manager.Value('b', False)    # whether each receiver has read the latest data
+        up_values = self._manager.list([False])  # now there might be many receivers, one is initialized
+
+        sm_queue = self._manager.Queue()        # metadata about the shared memory block
         initial_mode = forced_mode or TransportMode.UNDECIDED
-        mode_value = self._manager.Value('i', int(initial_mode))
+        mode_value = self._manager.Value('i', int(initial_mode))    # transport mode
 
         emitter_clock = clock or self._clock
         emitter = MultiprocessEmitter(
-            emitter_clock, message_queue, mode_value, lock, ts_value, up_value, sm_queue, forced_mode=forced_mode
+            emitter_clock, message_queue, mode_value, lock, ts_value, up_values, sm_queue, forced_mode=forced_mode
         )
         receiver = MultiprocessReceiver(
-            message_queue, mode_value, lock, ts_value, up_value, sm_queue, forced_mode=forced_mode
+            message_queue, mode_value, lock, ts_value, up_values, sm_queue, forced_mode=forced_mode
         )
         emitter._attach_receiver(receiver)
         receiver._attach_emitter(emitter)

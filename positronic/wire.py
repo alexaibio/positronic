@@ -20,8 +20,9 @@ def wire(
         world.connect(policy.target_grip, gripper.target_grip)
         world.connect(gripper.grip, policy.gripper_state)
 
-    for signal_name, emitter in cameras.items():
-        world.connect(emitter, policy.frames[signal_name])
+    #for signal_name, emitter in cameras.items():
+    #    world.connect(emitter, policy.frames[signal_name])
+
 
     ds_agent = None
     if dataset_writer is not None:
@@ -30,22 +31,39 @@ def wire(
             ds_agent.add_signal(signal_name, Serializers.camera_images)
         ds_agent.add_signal('target_grip')
         ds_agent.add_signal('robot_commands', Serializers.robot_command)
-        # TODO: Controller positions must be binded outside of this function
+        # TODO: Controller positions must be bound outside of this function
         ds_agent.add_signal('robot_state', Serializers.robot_state)
         ds_agent.add_signal('grip')
 
-        for signal_name, emitter in cameras.items():
-            world.connect(emitter, ds_agent.inputs[signal_name])
-        # Controller positions must be binded outside of this function
-        # TODO: DS commands must be binded outside of this function
+    #    for signal_name, emitter in cameras.items():
+    #        world.connect(emitter, ds_agent.inputs[signal_name])
+
+        # Controller positions must be bound outside of this function
+        # TODO: DS commands must be bound outside of this function
         world.connect(policy.robot_commands, ds_agent.inputs['robot_commands'])
         world.connect(policy.target_grip, ds_agent.inputs['target_grip'])
         world.connect(robot_arm.state, ds_agent.inputs['robot_state'])
         if gripper is not None:
             world.connect(gripper.grip, ds_agent.inputs['grip'])
 
-    if gui is not None:
-        for signal_name, emitter in cameras.items():
-            world.connect(emitter, gui.cameras[signal_name])
+    #if gui is not None:
+    #    for signal_name, emitter in cameras.items():
+    #        world.connect(emitter, gui.cameras[signal_name])
+
+    # wire a camera once to all receivers via broadcast
+    for signal_name, emitter in cameras.items():
+        receivers = [policy.frames[signal_name]]
+
+        if ds_agent is not None:
+            receivers.append(ds_agent.inputs[signal_name])
+
+        if gui is not None:
+            receivers.append(gui.cameras[signal_name])
+
+        # filter out FakeReceiver
+        receivers = [r for r in receivers if not isinstance(r, pimm.FakeReceiver)]
+
+        if receivers:
+            world.connect_broadcast(emitter, receivers)
 
     return ds_agent
