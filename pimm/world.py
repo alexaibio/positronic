@@ -635,7 +635,12 @@ class World:
         """Connect one emitter to multiple receivers using shared memory."""
         n = len(receivers)
         # Create a single SM pipe with n receivers
-        em, _ = self.mp_pipe(maxsize=1, transport=TransportMode.SHARED_MEMORY)
+        em, re = self.mp_pipe(maxsize=1, transport=TransportMode.SHARED_MEMORY)
+
+        # TODO: ? Resize up_values so it can track all receivers
+        while len(em._up_values) < n:
+            em._up_values.append(False)
+
         emitter._bind(em)
 
         for receiver in receivers:
