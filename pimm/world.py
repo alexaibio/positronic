@@ -65,7 +65,8 @@ class MultiprocessEmitter(SignalEmitter[T]):
     shared-memory buffer. It defers the transport choice until the first payload
     unless ``forced_mode`` pins the decision.
 
-    Weak references link the emitter and its paired receiver so that whichever
+    Weak references link the emitter and its paired receiver
+    (or many receivers in case of broadcasting) so that whichever
     side closes first can tell the other to release shared-memory views before
     unlinking the underlying buffer. Full references would create reference cycles
     and break pickling when ``multiprocessing`` spawns child processes, hence
@@ -100,7 +101,7 @@ class MultiprocessEmitter(SignalEmitter[T]):
         self._sm: multiprocessing.shared_memory.SharedMemory | None = None
         self._expected_buf_size: int | None = None
         #self._receiver_ref: weakref.ReferenceType[MultiprocessReceiver[Any]] | None = None
-        self._receiver_refs: list[weakref.ReferenceType[MultiprocessReceiver[Any]]] = []
+        self._receiver_refs: list[weakref.ReferenceType[MultiprocessReceiver[Any]]] | None = []
         self._closed = False
         if forced_mode is not None:
             self._mode_value.value = int(forced_mode)
@@ -171,7 +172,7 @@ class MultiprocessEmitter(SignalEmitter[T]):
             data.set_to_buffer(self._sm.buf)
             self._ts_value.value = ts
             #self._up_value.value = True
-            # data for all receicers is fresh
+            # data for all receivers is fresh
             for i in range(len(self._up_values)):
                 self._up_values[i] = True
 
@@ -194,8 +195,8 @@ class MultiprocessEmitter(SignalEmitter[T]):
             return
         self._closed = True
 
-        if self._receiver_ref is not None:
-            receiver = self._receiver_ref()
+        if self._receiver_refs is not None:
+            receiver = self._receiver_refs()
             if receiver is not None:
                 receiver.close()
 
@@ -212,13 +213,13 @@ class MultiprocessEmitter(SignalEmitter[T]):
     def __getstate__(self):
         # Drop weakrefs so multiprocessing can pickle the emitter state.
         state = self.__dict__.copy()
-        state['_receiver_ref'] = None
+        state['_receiver_refs'] = None
         return state
 
     def __setstate__(self, state):
         # Recreate weakref slot after unpickling in a child process.
         self.__dict__.update(state)
-        self._receiver_ref = None
+        self._receiver_refs = None
 
     def __del__(self):
         # Last-resort cleanup when user code forgets to close the emitter.
@@ -399,7 +400,7 @@ class MultiprocessReceiver(SignalReceiver[T]):
         if self._emitter_ref is not None:
             emitter = self._emitter_ref()
             if emitter is not None:
-                emitter._receiver_ref = None
+                emitter._receiver_refs = None
 
     def __del__(self):
         # Ensure shared-memory buffers are released on GC.
