@@ -14,7 +14,7 @@ from enum import IntEnum
 from multiprocessing import resource_tracker
 from multiprocessing.synchronize import Event as EventClass
 from queue import Empty, Full
-from typing import Any, TypeVar, Sequence
+from typing import Any, TypeVar, Sequence, List
 
 from .core import (
     Clock,
@@ -80,8 +80,8 @@ class MultiprocessEmitter(SignalEmitter[T]):
         mode_value: mp.Value,
         lock: mp.Lock,
         ts_value: mp.Value,
-        up_values: Sequence[bool],
-        sm_queue: mp.Queue,
+        up_values: List[mp.Value],      # a flag that new data has been written - for each receiver
+        sm_queue: mp.Queue | List[mp.Queue],
         *,
         forced_mode: TransportMode | None = None,
     ):
@@ -97,7 +97,14 @@ class MultiprocessEmitter(SignalEmitter[T]):
         self._ts_value = ts_value
         #self._up_value = up_value
         self._up_values = up_values  # List of bool flags for broadcast
-        self._sm_queue = sm_queue
+
+        #self._sm_queue = sm_queue
+        # Support both single queue (backward compatible) and multiple queues (broadcast)
+        if isinstance(sm_queue, list):
+            self._sm_queues = sm_queue
+        else:
+            self._sm_queues = [sm_queue]
+
         self._sm: multiprocessing.shared_memory.SharedMemory | None = None
         self._expected_buf_size: int | None = None
         #self._receiver_ref: weakref.ReferenceType[MultiprocessReceiver[Any]] | None = None
@@ -161,7 +168,11 @@ class MultiprocessEmitter(SignalEmitter[T]):
         if self._sm is None:
             self._expected_buf_size = buf_size
             self._sm = multiprocessing.shared_memory.SharedMemory(create=True, size=buf_size)
-            self._sm_queue.put((self._sm.name, buf_size, self._data_type, data.instantiation_params()))
+            # multiple queues are handled in connect_broadcast
+            #self._sm_queue.put((self._sm.name, buf_size, self._data_type, data.instantiation_params()))
+            metadata = (self._sm.name, buf_size, self._data_type, data.instantiation_params())
+            for sm_q in self._sm_queues:
+                sm_q.put(metadata)
         else:
             assert self._expected_buf_size == buf_size, (
                 f'Buffer size mismatch: expected {self._expected_buf_size}, got {buf_size}. '
@@ -329,24 +340,6 @@ class MultiprocessReceiver(SignalReceiver[T]):
         self._out_value = data_type(*instantiation_params)
         return True
 
-    # def _read_shared_memory(self) -> Message[T] | None:
-    #     with self._lock:
-    #         if self._ts_value.value == -1:
-    #             return None
-    #
-    #     if not self._ensure_shared_memory_initialized():
-    #         return None
-    #
-    #     with self._lock:
-    #         if self._ts_value.value == -1:
-    #             return None
-    #
-    #         assert self._readonly_buffer is not None
-    #         assert self._out_value is not None
-    #         self._out_value.read_from_buffer(self._readonly_buffer)
-    #         updated = self._up_value.value
-    #         self._up_value.value = False
-    #         return Message(data=self._out_value, ts=self._ts_value.value, updated=updated)
 
     def _read_shared_memory(self) -> Message[T] | None:
         with self._lock:
@@ -362,13 +355,13 @@ class MultiprocessReceiver(SignalReceiver[T]):
             assert self._out_value is not None
             self._out_value.read_from_buffer(self._readonly_buffer)
 
+            # update read status for an individual
             updated = self._up_values[self._up_index]
-            if not updated:
-                return None
-
+            # if not updated:
+            #     return None
 
             self._up_values[self._up_index] = False
-            return Message(data=self._out_value, ts=self._ts_value.value, updated=True)
+            return Message(data=self._out_value, ts=self._ts_value.value, updated=updated) # instead of True
 
 
     def read(self) -> Message[T] | None:
@@ -635,99 +628,22 @@ class World:
             emitter: ControlSystemEmitter[T],
             receivers: list[ControlSystemReceiver[T]],
     ):
-        """Connect one emitter to multiple receivers using shared memory.
-
-        Creates ONE shared memory block that all receivers read from.
-        Each receiver gets:
-        - Its own queue to receive the shared memory name/metadata
-        - Its own 'updated' flag to track if they've read the latest data
+        """Declare a broadcast connection: one emitter to multiple receivers.
+        The actual transport (shared memory) is created later in start().
         """
         if not receivers:
             return
 
-        n = len(receivers)
+        if isinstance(emitter, FakeEmitter):
+            return
 
-        # Create shared primitives
-        lock = self._manager.Lock()
-        ts_value = self._manager.Value('Q', -1)  # Shared timestamp
-        up_values = self._manager.list([False] * n)  # One flag per receiver
-        sm_queue_list = [self._manager.Queue() for _ in range(n)]  # One queue per receiver
-        mode_value = self._manager.Value('i', int(TransportMode.SHARED_MEMORY))
+        real_receivers = [r for r in receivers if not isinstance(r, FakeReceiver)]
 
-        # Create ONE emitter with shared memory
-        emitter_clock = self._clock
-        em = MultiprocessEmitter(
-            emitter_clock,
-            None,  # No message queue for shared memory mode
-            mode_value,
-            lock,
-            ts_value,
-            up_values,
-            sm_queue_list[0],  # We'll handle multiple queues differently
-            forced_mode=TransportMode.SHARED_MEMORY
-        )
+        if not real_receivers:
+            return
 
-        # Modify emitter to send SM name to ALL queues
-        # Store all queues in emitter
-        em._sm_queues = sm_queue_list
-
-        # Override _emit_shared_memory to send to all queues
-        original_emit_sm = em._emit_shared_memory
-
-        def _emit_shared_memory_broadcast(data, ts):
-            if em._data_type is None:
-                em._data_type = type(data)
-            elif not isinstance(data, em._data_type):
-                raise TypeError(f'Data type mismatch: {type(data)} != {em._data_type}')
-
-            buf_size = data.buf_size()
-
-            if em._sm is None:
-                em._expected_buf_size = buf_size
-                em._sm = multiprocessing.shared_memory.SharedMemory(create=True, size=buf_size)
-                # Send SM name to ALL receiver queues
-                for sm_q in em._sm_queues:
-                    sm_q.put((em._sm.name, buf_size, em._data_type, data.instantiation_params()))
-            else:
-                assert em._expected_buf_size == buf_size, (
-                    f'Buffer size mismatch: expected {em._expected_buf_size}, got {buf_size}. '
-                    'All data instances must have the same buffer size for a given channel.'
-                )
-
-            with em._lock:
-                data.set_to_buffer(em._sm.buf)
-                em._ts_value.value = ts
-                # Mark data as fresh for ALL receivers
-                for i in range(len(em._up_values)):
-                    em._up_values[i] = True
-
-            return True
-
-        em._emit_shared_memory = _emit_shared_memory_broadcast
-
-        # Create MULTIPLE receivers, each with its own queue and flag index
-        for i, receiver in enumerate(receivers):
-            re = MultiprocessReceiver(
-                None,  # No message queue for shared memory mode
-                mode_value,
-                lock,
-                ts_value,
-                up_values,
-                sm_queue_list[i],  # Each receiver gets its own queue
-                forced_mode=TransportMode.SHARED_MEMORY
-            )
-
-            # Attach receiver to emitter (sets _up_index = i)
-            em._attach_receiver(re)
-            re._attach_emitter(em)
-
-            # Bind the ControlSystemReceiver to the MultiprocessReceiver
-            receiver._bind(re)
-
-            self._cleanup_emitters_readers.append((em, re))
-
-        # Bind the ControlSystemEmitter to the MultiprocessEmitter
-        emitter._bind(em)
+        # Mark it as 'broadcast' so start() knows to handle it differently
+        self._connections.append(('broadcast', emitter, real_receivers))
 
     def pair(
         self,
@@ -783,6 +699,8 @@ class World:
         world wires control system emitters and receivers together using local
         queues or multiprocessing queues. Returns an iterator produced by
         ``interleave`` so callers can drive the cooperative scheduler.
+
+        Handles both regular connections (one-to-one) and broadcast connections (one-to-many).
         """
         main_process = main_process if isinstance(main_process, list) else [main_process]
         main_process = [m for m in main_process if m is not None]
@@ -794,19 +712,50 @@ class World:
         all_cs = local_cs | set(background)
 
         system_clock = SystemClock()
-        local_connections, mp_connections = [], []
+        local_connections, mp_connections, broadcast_connections = [], [], []
 
         # for each logical connection (emitter, receiver) decide if it is local or inter-process
-        for emitter, receiver, emitter_wrapper, receiver_wrapper in self._connections:
-            if emitter.owner in local_cs and receiver.owner in local_cs:
-                local_connections.append((emitter, emitter_wrapper, receiver_wrapper(receiver), receiver.maxsize, None))
-            elif emitter.owner not in all_cs:
-                raise ValueError(f'Emitter {emitter.owner} is not in any control system')
-            elif receiver.owner not in all_cs:
-                raise ValueError(f'Receiver {receiver.owner} is not in any control system')
+        # for emitter, receiver, emitter_wrapper, receiver_wrapper in self._connections:
+        #     if emitter.owner in local_cs and receiver.owner in local_cs:
+        #         local_connections.append((emitter, emitter_wrapper, receiver_wrapper(receiver), receiver.maxsize, None))
+        #     elif emitter.owner not in all_cs:
+        #         raise ValueError(f'Emitter {emitter.owner} is not in any control system')
+        #     elif receiver.owner not in all_cs:
+        #         raise ValueError(f'Receiver {receiver.owner} is not in any control system')
+        #     else:
+        #         clock = None if emitter.owner in local_cs else system_clock
+        #         mp_connections.append((emitter, emitter_wrapper, receiver_wrapper(receiver), receiver.maxsize, clock))
+
+        # Separate regular connections from broadcast connections
+        for connection in self._connections:
+            if connection[0] == 'broadcast':
+                # Broadcast connection: ('broadcast', emitter, [receiver1, receiver2, ...])
+                _, emitter, receivers = connection
+
+                # Verify emitter and all receivers are in control systems
+                if emitter.owner not in all_cs:
+                    raise ValueError(f'Emitter {emitter.owner} is not in any control system')
+                for receiver in receivers:
+                    if receiver.owner not in all_cs:
+                        raise ValueError(f'Receiver {receiver.owner} is not in any control system')
+
+                broadcast_connections.append((emitter, receivers))
             else:
-                clock = None if emitter.owner in local_cs else system_clock
-                mp_connections.append((emitter, emitter_wrapper, receiver_wrapper(receiver), receiver.maxsize, clock))
+                # Regular connection: (emitter, receiver, emitter_wrapper, receiver_wrapper)
+                # decide if it is local or inter-process
+                emitter, receiver, emitter_wrapper, receiver_wrapper = connection
+
+                if emitter.owner in local_cs and receiver.owner in local_cs:
+                    local_connections.append(
+                        (emitter, emitter_wrapper, receiver_wrapper(receiver), receiver.maxsize, None))
+                elif emitter.owner not in all_cs:
+                    raise ValueError(f'Emitter {emitter.owner} is not in any control system')
+                elif receiver.owner not in all_cs:
+                    raise ValueError(f'Receiver {receiver.owner} is not in any control system')
+                else:
+                    clock = None if emitter.owner in local_cs else system_clock
+                    mp_connections.append(
+                        (emitter, emitter_wrapper, receiver_wrapper(receiver), receiver.maxsize, clock))
 
         # create local_pipe for each local connection
         for emitter, emitter_wrapper, receiver, maxsize, _clock in local_connections:
@@ -824,6 +773,26 @@ class World:
 
             emitter._bind(emitter_wrapper(em))
             receiver._bind(re)
+
+        # Create broadcast pipes for one-to-many connections
+        for emitter, receivers in broadcast_connections:
+            # Determine which clock to use
+            emitter_clock = None if emitter.owner in local_cs else system_clock
+
+            # Create broadcast transport (one emitter, multiple receivers)
+            em, re_list = self.mp_pipe_broadcast(
+                num_receivers=len(receivers),
+                maxsize=1,
+                clock=emitter_clock
+            )
+
+            # Bind ControlSystemEmitter to MultiprocessEmitter
+            emitter._bind(em)
+
+            # Bind each ControlSystemReceiver to its corresponding MultiprocessReceiver
+            for receiver, re in zip(receivers, re_list):
+                receiver._bind(re)
+
 
         self.start_in_subprocess(*[cs.run for cs in background])
         return self.interleave(*[cs.run for cs in main_process])
@@ -911,3 +880,70 @@ class World:
         receiver._attach_emitter(emitter)
         self._cleanup_emitters_readers.append((emitter, receiver))
         return emitter, receiver
+
+
+    def mp_pipe_broadcast(
+            self,
+            num_receivers: int,
+            maxsize: int = 1,
+            clock: Clock | None = None
+    ) -> tuple[SignalEmitter[T], list[SignalReceiver[T]]]:
+        """Create an inter-process broadcast channel: one emitter, multiple receivers.
+
+        All receivers share the same shared memory block but each has:
+        - Its own queue to receive shared memory metadata
+        - Its own 'updated' flag to track if they've read the latest data
+
+        Args:
+            num_receivers: Number of receivers to create
+            maxsize: Maximum queue size (unused for shared memory mode)
+            clock: Optional clock override for timestamp generation
+
+        Returns:
+            Tuple of (emitter, list of receivers) for broadcast communication
+        """
+        if not self.entered:
+            raise AssertionError('Broadcast with shared memory is only available after entering the world context.')
+
+        # Create shared primitives for broadcast
+        lock = self._manager.Lock()
+        ts_value = self._manager.Value('Q', -1)  # Shared timestamp
+        up_values = self._manager.list([False] * num_receivers)  # One flag per receiver
+        sm_queue_list = [self._manager.Queue() for _ in range(num_receivers)]  # One queue per receiver
+        mode_value = self._manager.Value('i', int(TransportMode.SHARED_MEMORY))
+
+        emitter_clock = clock or self._clock
+
+        # Create ONE MultiprocessEmitter with list of queues
+        emitter = MultiprocessEmitter(
+            emitter_clock,
+            None,  # No message queue for shared memory mode
+            mode_value,
+            lock,
+            ts_value,
+            up_values,
+            sm_queue_list,  # Pass list of queues
+            forced_mode=TransportMode.SHARED_MEMORY
+        )
+
+        # Create MULTIPLE MultiprocessReceivers
+        receivers = []
+        for i in range(num_receivers):
+            receiver = MultiprocessReceiver(
+                None,  # No message queue for shared memory mode
+                mode_value,
+                lock,
+                ts_value,
+                up_values,
+                sm_queue_list[i],  # Each receiver gets its own queue
+                forced_mode=TransportMode.SHARED_MEMORY
+            )
+
+            # Attach receiver to emitter (sets _up_index)
+            emitter._attach_receiver(receiver)
+            receiver._attach_emitter(emitter)
+            receivers.append(receiver)
+
+            self._cleanup_emitters_readers.append((emitter, receiver))
+
+        return emitter, receivers

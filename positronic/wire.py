@@ -23,14 +23,15 @@ def wire(
     ds_agent = None
     if dataset_writer is not None:
         ds_agent = DsWriterAgent(dataset_writer, time_mode=time_mode)
+
         for signal_name in cameras.keys():
             ds_agent.add_signal(signal_name, Serializers.camera_images)
+
         ds_agent.add_signal('target_grip')
         ds_agent.add_signal('robot_commands', Serializers.robot_command)
         # TODO: Controller positions must be binded outside of this function
         ds_agent.add_signal('robot_state', Serializers.robot_state)
         ds_agent.add_signal('grip')
-
 
         # Controller positions must be bound outside of this function
         # TODO: DS commands must be bound outside of this function
@@ -46,27 +47,22 @@ def wire(
             for signal_name, emitter in cameras.items():
                 # Collect all receivers for this camera signal
                 receivers = []
-
-                # Policy always receives camera frames
                 receivers.append(policy.frames[signal_name])
-
-                # Dataset agent receives camera frames if it exists
                 if ds_agent is not None:
                     receivers.append(ds_agent.inputs[signal_name])
-
-                # GUI receives camera frames if it exists
                 if gui is not None:
                     receivers.append(gui.cameras[signal_name])
 
                 # filter out FakeReceiver
                 receivers = [r for r in receivers if not isinstance(r, pimm.FakeReceiver)]
 
-                # Use broadcast for multiple receivers (shared memory optimization)
-                # or regular connect for single receiver
+                # connect emitter with one or several receivers
                 if len(receivers) > 1:
                     world.connect_broadcast(emitter, receivers)
                 elif len(receivers) == 1:
                     world.connect(emitter, receivers[0])
+                else:
+                    raise ValueError("No receivers have been specified for data collection.")
 
 
     return ds_agent
