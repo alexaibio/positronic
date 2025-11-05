@@ -14,7 +14,7 @@ from enum import IntEnum
 from multiprocessing import resource_tracker
 from multiprocessing.synchronize import Event as EventClass
 from queue import Empty, Full
-from typing import Any, List, TypeVar
+from typing import Any, TypeVar
 
 from .core import (
     Clock,
@@ -81,7 +81,7 @@ class MultiprocessEmitter(SignalEmitter[T]):
         lock: mp.Lock,
         ts_value: mp.Value,
         up_values: list[mp.Value],      # a flag that new data has been written - for each receiver
-        sm_queue: mp.Queue | List[mp.Queue],
+        sm_queue: mp.Queue | list[mp.Queue],
         *,
         forced_mode: TransportMode | None = None,
     ):
