@@ -339,7 +339,7 @@ class TestSharedMemoryBroadcast:
             emitter.emit(data, ts=100)
 
             # All receivers should get the data
-            for i, receiver in enumerate(receivers):
+            for receiver in receivers:
                 msg = receiver.read()
                 assert msg is not None
                 assert np.allclose(msg.data.array, [1.0, 2.0])
