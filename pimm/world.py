@@ -274,7 +274,7 @@ class MultiprocessReceiver(SignalReceiver[T]):
         self._sm: multiprocessing.shared_memory.SharedMemory | None = None
         self._out_value: SMCompliant | None = None
         self._readonly_buffer: memoryview | None = None
-        self._up_index: int | None = None       # Assigned by emitter
+        self._up_index: int | None = None       # read flag index for this receiver: Assigned by emitter
 
         self._last_queue_message: Message[T] | None = None
         self._closed = False
@@ -713,18 +713,6 @@ class World:
 
         system_clock = SystemClock()
         local_connections, mp_connections, broadcast_connections = [], [], []
-
-        # for each logical connection (emitter, receiver) decide if it is local or inter-process
-        # for emitter, receiver, emitter_wrapper, receiver_wrapper in self._connections:
-        #     if emitter.owner in local_cs and receiver.owner in local_cs:
-        #         local_connections.append((emitter, emitter_wrapper, receiver_wrapper(receiver), receiver.maxsize, None))
-        #     elif emitter.owner not in all_cs:
-        #         raise ValueError(f'Emitter {emitter.owner} is not in any control system')
-        #     elif receiver.owner not in all_cs:
-        #         raise ValueError(f'Receiver {receiver.owner} is not in any control system')
-        #     else:
-        #         clock = None if emitter.owner in local_cs else system_clock
-        #         mp_connections.append((emitter, emitter_wrapper, receiver_wrapper(receiver), receiver.maxsize, clock))
 
         # Separate regular connections from broadcast connections
         for connection in self._connections:
