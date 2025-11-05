@@ -1,4 +1,3 @@
-import numpy as np
 import multiprocessing as mp
 import struct
 import time
@@ -1157,7 +1156,6 @@ class TestWorldBroadcast:
             world.start([producer, consumer1, consumer2])
 
             # Emit data
-            array = np.array([5.0, 6.0], dtype=np.float32)
             data = DummySMValue(5.0)  # Use DummySMValue defined in test_world.py
             producer.emitter.emit(data, ts=300)
 
