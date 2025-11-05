@@ -64,5 +64,4 @@ def wire(
                 else:
                     raise ValueError("No receivers have been specified for data collection.")
 
-
     return ds_agent
