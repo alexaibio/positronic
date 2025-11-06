@@ -4,6 +4,7 @@ import heapq
 import logging
 import multiprocessing as mp
 import multiprocessing.shared_memory
+from multiprocessing.queues import Queue
 import sys
 import time
 import traceback
@@ -81,7 +82,7 @@ class MultiprocessEmitter(SignalEmitter[T]):
         lock: mp.Lock,
         ts_value: mp.Value,
         up_values: list[mp.Value],      # a flag that new data has been written - for each receiver
-        sm_queue: mp.Queue | list[mp.Queue],
+        sm_queue: Queue | list[Queue],  # mp.Queue | list[mp.Queue],
         *,
         forced_mode: TransportMode | None = None,
     ):
