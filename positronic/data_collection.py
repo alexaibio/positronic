@@ -283,8 +283,7 @@ def main_sim(
         _wire(world, ds_agent, data_collection, webxr, robot_arm, sound)
 
         sim_iter = world.start(
-            main_process=[sim, mujoco_cameras, robot_arm, gripper, data_collection],
-            background=[webxr, gui, ds_agent, sound]
+[sim, mujoco_cameras, robot_arm, gripper, data_collection],[webxr, gui, ds_agent, sound]
         )
         sim_iter = iter(sim_iter)
 
