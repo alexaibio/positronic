@@ -18,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
 import positronic.cfg.dataset
+import positronic.utils.s3 as pos3
 from positronic import utils
 from positronic.dataset.dataset import Dataset
 from positronic.dataset.local_dataset import LocalDataset
@@ -230,6 +231,7 @@ def main(
     uvicorn.run(app, host=host, port=port, log_level='debug' if debug else 'info')
 
 
+@pos3.with_mirror()
 def _internal_main():
     cfn.cli(main)
 

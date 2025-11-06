@@ -2,7 +2,6 @@ import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import nullcontext
 from enum import Enum
-from pathlib import Path
 
 import configuronic as cfn
 import numpy as np
@@ -14,6 +13,7 @@ import positronic.cfg.hardware.roboarm
 import positronic.cfg.simulator
 import positronic.cfg.sound
 import positronic.cfg.webxr
+import positronic.utils.s3 as pos3
 from positronic import geom, wire
 from positronic.dataset.ds_writer_agent import (
     DsWriterAgent,
@@ -212,7 +212,7 @@ def main(
     static_getter = None if task is None else lambda: {'task': task}
     data_collection = DataCollectionController(operator_position.value, metadata_getter=static_getter)
 
-    writer_cm = LocalDatasetWriter(Path(output_dir)) if output_dir is not None else nullcontext(None)
+    writer_cm = LocalDatasetWriter(pos3.upload(output_dir)) if output_dir is not None else nullcontext(None)
     with writer_cm as dataset_writer, pimm.World() as world:
         ds_agent = wire.wire(world, data_collection, dataset_writer, camera_emitters, robot_arm, gripper, None)
         _wire(world, ds_agent, data_collection, webxr, robot_arm, sound)
@@ -276,7 +276,7 @@ def main_sim(
 
     data_collection = DataCollectionController(operator_position.value, metadata_getter=metadata_getter)
 
-    writer_cm = LocalDatasetWriter(Path(output_dir)) if output_dir is not None else nullcontext(None)
+    writer_cm = LocalDatasetWriter(pos3.upload(output_dir)) if output_dir is not None else nullcontext(None)
     with writer_cm as dataset_writer, pimm.World(clock=sim) as world:
         ds_agent = wire.wire(world, data_collection, dataset_writer, cameras, robot_arm, gripper, gui, TimeMode.MESSAGE)
 
@@ -341,6 +341,7 @@ droid = cfn.Config(
 )
 
 
+@pos3.with_mirror()
 def _internal_main():
     cfn.cli({'real': main_cfg, 'so101': so101cfg, 'sim': main_sim, 'droid': droid})
 
