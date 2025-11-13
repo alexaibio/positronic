@@ -8,7 +8,7 @@ import sys
 import time
 import traceback
 import weakref
-from collections import deque, defaultdict
+from collections import defaultdict, deque
 from collections.abc import Callable, Iterator
 from enum import IntEnum
 from multiprocessing import resource_tracker
@@ -122,9 +122,9 @@ class MultiprocessEmitter(SignalEmitter[T]):
 
     def _attach_receiver(self, receiver: 'MultiprocessReceiver[Any]') -> int:
         self._receiver_refs.append(weakref.ref(receiver))
+        # we need to set idx even if we are not broadcasting
         idx = len(self._receiver_refs) - 1
         receiver._up_index = idx
-        return idx
 
     def _ensure_mode(self, data: T) -> TransportMode:
         """Choose the data transport based on the first piece of data emitted"""
@@ -198,7 +198,10 @@ class MultiprocessEmitter(SignalEmitter[T]):
         self._closed = True
 
         while self._receiver_refs:
-            receiver = self._receiver_refs.pop()
+            receiver_ref = self._receiver_refs.pop()
+            if receiver_ref is None:
+                continue
+            receiver = receiver_ref() if callable(receiver_ref) else receiver_ref
             if receiver is not None:
                 receiver.close()
 
@@ -761,7 +764,7 @@ class World:
                     except (AssertionError, Exception) as e:
                         # Fallback to multiple individual mp_pipes if broadcast not available
                         # or if data doesn't support shared memory
-                        print(f"Warning: Could not create shared memory broadcast ({e}), falling back to multiple pipes")
+                        print(f"Warning: Could not create SM broadcast ({e}), falling back to multiple pipes")
                         for receiver, emitter_wrapper, receiver_wrapper in mp_receivers:
                             kwargs = {'maxsize': receiver.maxsize} if receiver.maxsize is not None else {}
                             em, re = self.mp_pipe(clock=clock, **kwargs)
